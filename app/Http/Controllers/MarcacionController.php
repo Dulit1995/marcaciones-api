@@ -5,15 +5,14 @@ namespace App\Http\Controllers;
 use App\Models\Marcacion;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\DB;
 
 class MarcacionController extends Controller
 {
     public function store(Request $request)
     {
-        \Log::info('Request Data:', $request->all()); // Agrega esto para depurar
-
         $validator = Validator::make($request->all(), [
-            'empleado_id' => 'required|integer',
+            'empleado_id' => 'required|exists:empleados,id',
             'tipo_marcacion' => 'required|in:ingreso,salida,almuerzo_inicio,almuerzo_fin',
             'timestamp' => 'required|date',
         ]);
@@ -22,64 +21,59 @@ class MarcacionController extends Controller
             return response()->json(['errors' => $validator->errors()], 400);
         }
 
-        // Validar marcaciones consecutivas del mismo tipo
-        $ultimaMarcacion = Marcacion::where('empleado_id', $request->empleado_id)
-            ->orderBy('timestamp', 'desc')
-            ->first();
-
-        if ($ultimaMarcacion && $ultimaMarcacion->tipo_marcacion === $request->tipo_marcacion) {
-            return response()->json(['message' => 'No se permiten marcaciones consecutivas del mismo tipo'], 400);
+        if (!$this->validarMarcacion($request->empleado_id, $request->tipo_marcacion, $request->timestamp)) {
+            return response()->json(['error' => 'Invalid marcacion.'], 400);
         }
 
-        // Validar almuerzo_fin después de almuerzo_inicio
-        if ($request->tipo_marcacion === 'almuerzo_fin') {
-            $almuerzoInicio = Marcacion::where('empleado_id', $request->empleado_id)
-                ->where('tipo_marcacion', 'almuerzo_inicio')
-                ->where('timestamp', '<', $request->timestamp)
-                ->latest()
-                ->first();
+        try {
+            DB::beginTransaction();
 
-            if (!$almuerzoInicio) {
-                return response()->json(['message' => 'Debe haber una marcación de almuerzo_inicio antes de almuerzo_fin'], 400);
-            }
+            $marcacion = Marcacion::create([
+                'empleado_id' => $request->empleado_id,
+                'tipo_marcacion' => $request->tipo_marcacion,
+                'timestamp' => $request->timestamp,
+            ]);
 
-            $almuerzoFinPrevio = Marcacion::where('empleado_id', $request->empleado_id)
-                ->where('tipo_marcacion', 'almuerzo_fin')
-                ->where('timestamp', '<', $request->timestamp)
-                ->latest()
-                ->first();
+            DB::commit();
 
-            if ($almuerzoFinPrevio && $almuerzoFinPrevio->timestamp > $almuerzoInicio->timestamp) {
-                return response()->json(['message' => 'No se permiten múltiples marcaciones de almuerzo_fin sin almuerzo_inicio intermedio'], 400);
-            }
+            return response()->json($marcacion, 201);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            return response()->json(['error' => 'Failed to create marcacion.'], 500);
         }
-
-        if ($request->tipo_marcacion === 'almuerzo_inicio') {
-            $almuerzoFinPendiente = Marcacion::where('empleado_id', $request->empleado_id)
-                ->where('tipo_marcacion', 'almuerzo_inicio')
-                ->whereNull('almuerzo_fin_id')
-                ->latest()
-                ->first();
-            if ($almuerzoFinPendiente) {
-                return response()->json(['message' => 'No se permite marcación de almuerzo_inicio sin marcación de almuerzo_fin anterior'], 400);
-            }
-        }
-
-        $marcacion = Marcacion::create($request->all());
-
-        // Si es almuerzo_inicio, guardar el ID para la marcación de almuerzo_fin
-        if ($request->tipo_marcacion === 'almuerzo_inicio') {
-            $marcacion->almuerzo_fin_id = $marcacion->id;
-            $marcacion->save();
-        }
-
-        return response()->json(['message' => 'Marcacion registrada correctamente'], 201);
     }
 
     public function show($empleado_id)
     {
-        $marcaciones = Marcacion::where('empleado_id', $empleado_id)->get();
+        try {
+            $marcaciones = Marcacion::where('empleado_id', $empleado_id)->get();
+            return response()->json($marcaciones);
+        } catch (\Exception $e) {
+            return response()->json(['error' => 'Failed to retrieve marcaciones.'], 500);
+        }
+    }
 
-        return response()->json($marcaciones);
+    private function validarMarcacion($empleadoId, $tipoMarcacion, $timestamp)
+    {
+        $ultimaMarcacion = Marcacion::where('empleado_id', $empleadoId)
+            ->orderBy('timestamp', 'desc')
+            ->first();
+
+        if (!$ultimaMarcacion) {
+            return $tipoMarcacion === 'ingreso';
+        }
+
+        switch ($tipoMarcacion) {
+            case 'ingreso':
+                return $ultimaMarcacion->tipo_marcacion === 'salida' || $ultimaMarcacion->tipo_marcacion === 'almuerzo_fin';
+            case 'salida':
+                return $ultimaMarcacion->tipo_marcacion === 'ingreso' || $ultimaMarcacion->tipo_marcacion === 'almuerzo_fin';
+            case 'almuerzo_inicio':
+                return $ultimaMarcacion->tipo_marcacion === 'ingreso' || $ultimaMarcacion->tipo_marcacion === 'salida';
+            case 'almuerzo_fin':
+                return $ultimaMarcacion->tipo_marcacion === 'almuerzo_inicio';
+            default:
+                return false;
+        }
     }
 }

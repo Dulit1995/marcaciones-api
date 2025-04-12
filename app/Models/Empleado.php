@@ -5,18 +5,18 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
-class Marcacion extends Model
+class Empleado extends Model
 {
     use HasFactory;
 
     protected $fillable = [
-        'empleado_id',
-        'tipo_marcacion',
-        'timestamp',
+        'nombre',
+        'apellido',
+        'departamento',
     ];
 
-    public function empleado()
+    public function marcaciones()
     {
-        return $this->belongsTo(Empleado::class);
+        return $this->hasMany(Marcacion::class);
     }
 }

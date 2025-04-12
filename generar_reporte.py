@@ -1,69 +1,64 @@
-import requests  # Importa la biblioteca para realizar solicitudes HTTP
-from datetime import datetime  # Importa la clase datetime del módulo datetime
+import pandas as pd
+import argparse
+import mysql.connector  # O psycopg2 para PostgreSQL
 
-def generar_reporte_desde_api(base_url, fecha_inicio, fecha_fin, empleado_id=None, token=None):
-    """
-    Genera un reporte de marcaciones de empleados a partir de la API de Laravel.
-
-    Args:
-        base_url (str): La URL base de la API de Laravel (ej., "http://127.0.0.1:8000/api").
-        fecha_inicio (str): Fecha de inicio del reporte (formato AAAA-MM-DD).
-        fecha_fin (str): Fecha de fin del reporte (formato AAAA-MM-DD).
-        empleado_id (int, opcional): ID del empleado para filtrar el reporte.  Por defecto, None.
-        token (str, opcional): Token de autenticación Bearer. Por defecto, None.
-
-    Returns:
-        list: Una lista de diccionarios, donde cada diccionario representa una marcación.
-              Retorna una lista vacía si no hay marcaciones que coincidan con los criterios.
-              Retorna None si se produce un error.
-    """
-    url = f"{base_url}/reportes/marcaciones"  # Define la URL del endpoint de la API para el reporte
-    params = {
-        "fecha_inicio": fecha_inicio,
-        "fecha_fin": fecha_fin,
-    }
-    if empleado_id:
-        params["empleado_id"] = empleado_id  # Agrega el ID del empleado a los parámetros si se proporciona
-
-    headers = {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"  # Agrega el token de autorización al encabezado si se proporciona
-
+def generar_reporte(fecha_inicio, fecha_fin, db_config):
     try:
-        response = requests.get(url, params=params, headers=headers)  # Realiza la solicitud GET a la API
-        response.raise_for_status()  # Lanza una excepción para códigos de estado HTTP de error (4xx o 5xx)
-        reporte = response.json()  # Decodifica la respuesta JSON de la API
+        # Conexión a la base de datos MySQL
+        conexion = mysql.connector.connect(**db_config)
+        cursor = conexion.cursor()
 
-        # Formatea las fechas utilizando Python
-        for marcacion in reporte:
-            marcacion['timestamp'] = datetime.strptime(marcacion['timestamp'], '%Y-%m-%d %H:%M:%S')
-            marcacion['timestamp'] = marcacion['timestamp'].strftime('%Y-%m-%d %H:%M:%S')
+        # Consulta SQL para obtener los datos de las marcaciones
+        consulta = """
+            SELECT e.id AS empleado_id, e.nombre, e.apellido, m.timestamp AS fecha, m.tipo_marcacion
+            FROM marcaciones m
+            JOIN empleados e ON m.empleado_id = e.id
+            WHERE m.timestamp BETWEEN %s AND %s
+            ORDER BY e.id, m.timestamp;
+        """
 
-        return reporte  # Retorna el reporte formateado
+        cursor.execute(consulta, (fecha_inicio, fecha_fin))
+        resultados = cursor.fetchall()
 
-    except requests.exceptions.RequestException as e:
-        print(f"Se produjo un error al comunicarse con la API: {e}")  # Imprime el mensaje de error
-        return None  # Retorna None para indicar el error
-    except ValueError as ve:
-        print(f"Se produjo un error al decodificar la respuesta JSON: {ve}")
-        return None
+        # Convertir los resultados a un DataFrame de pandas
+        columnas = ["empleado_id", "nombre", "apellido", "fecha", "tipo_marcacion"]
+        df = pd.DataFrame(resultados, columns=columnas)
+
+        # Crear una nueva columna 'hora' a partir de la columna 'fecha'
+        df['hora'] = pd.to_datetime(df['fecha']).dt.time
+
+        # Eliminar columna 'apellido'
+        df = df.drop('apellido', axis=1)
+
+        # Reorganizar columnas
+        df = df[["empleado_id", "nombre", "fecha", "hora", "tipo_marcacion"]]
+
+        # Exportar el DataFrame a un archivo CSV
+        df.to_csv("reporte_marcaciones.csv", index=False)
+
+        print("Reporte generado exitosamente: reporte_marcaciones.csv")
+
+    except Exception as e:
+        print(f"Error al generar el reporte: {e}")
+
+    finally:
+        if 'conexion' in locals() and conexion.is_connected():
+            cursor.close()
+            conexion.close()
 
 if __name__ == "__main__":
-    # Ejemplo de uso de la función
-    base_url = "http://127.0.0.1:8000/api"  # URL base de la API de Laravel.  Modificar si es diferente.
-    fecha_inicio = "2024-01-01"
-    fecha_fin = "2024-01-31"
-    empleado_id = 1  # ID del empleado a incluir en el reporte. Usar None para todos.
-    token = None  # Token de autenticación de la API.  Proporcionar si es necesario.
+    parser = argparse.ArgumentParser(description="Generar reporte de marcaciones.")
+    parser.add_argument("fecha_inicio", help="Fecha de inicio (YYYY-MM-DD HH:MM:SS)")
+    parser.add_argument("fecha_fin", help="Fecha de fin (YYYY-MM-DD HH:MM:SS)")
 
-    reporte = generar_reporte_desde_api(base_url, fecha_inicio, fecha_fin, empleado_id, token)  # Llama a la función para obtener el reporte
+    args = parser.parse_args()
 
-    if reporte is not None:  # Verifica si la función retornó un valor válido
-        if reporte:  # Verifica si el reporte contiene datos
-            print("Reporte de Marcaciones:")
-            for marcacion in reporte:  # Itera sobre las marcaciones en el reporte
-                print(marcacion)  # Imprime cada marcación
-        else:
-            print("No se encontraron marcaciones para los criterios especificados.")  # Mensaje si no hay datos
-    else:
-        print("No se pudo generar el reporte debido a un error.")  # Mensaje si hubo un error
+    # Configuración de la base de datos MySQL
+    db_config = {
+        "host": "127.0.0.1",
+        "user": "root",
+        "password": "",
+        "database": "marcaciones_db",
+    }
+
+    generar_reporte(args.fecha_inicio, args.fecha_fin, db_config)
